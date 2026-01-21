@@ -1,0 +1,405 @@
+import re
+import time
+import random
+import requests
+import pandas as pd
+from urllib.parse import unquote
+from pathlib import Path
+import undetected_chromedriver as uc
+
+# ==== SELENIUM ====
+
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ================== CONFIG ==================
+
+FILTER_BY = "all"      # hoặc "not-viewed" 
+SOURCE = "1"           # 1 = TopCV, nếu sau này muốn tất cả nguồn thì để "" hoặc None
+
+API_BASE = "https://tuyendung-api.topcv.vn"
+LIST_ENDPOINT = f"{API_BASE}/api/v1/cv-management/cvs"
+
+# Trang login / dashboard
+LOGIN_URL = "https://tuyendung.topcv.vn/app/login"
+
+# Trang quản lý CV chưa xem
+CV_PAGE_URL = (
+    "https://tuyendung.topcv.vn/app/cvs-management"
+    "?get_newest_cv=true"
+    "&recruitment_campaign_id"
+    f"&source={SOURCE}"
+    "&status"
+    "&label"
+    "&filter_cv_pro=false"
+    "&start_date"
+    "&end_date"
+    f"&filter_by={FILTER_BY}"
+)
+
+BASE_DIR = Path(__file__).resolve().parent
+CHROME_USER_DATA_DIR = str(BASE_DIR / "chrome_profile_topcv")
+COOKIES_FILE = str(BASE_DIR / "cookies.txt")
+OUTPUT_CSV = str(BASE_DIR / "topcv_cvs_api_list.csv")
+
+# ================== CORE UTILS ==================
+def _force_quit_suppress_errors(self):
+    try:
+        self.quit()
+    except OSError:
+        pass
+uc.Chrome.__del__ = _force_quit_suppress_errors
+
+def cookie_str_to_dict(s: str) -> dict:
+    cookies = {}
+    for part in s.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        cookies[k.strip()] = v.strip()
+    return cookies
+
+def extract_bearer_from_cookie(cookies: dict) -> str | None:
+    raw = cookies.get("cookie__token.refresh")
+    if not raw:
+        return None
+    raw = unquote(raw).strip()
+    if raw.lower().startswith("bearer "):
+        return raw
+    if re.match(r"^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$", raw):
+        return f"Bearer {raw}"
+    return raw
+
+def safe_get(d, *keys, default=None):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(k)
+    return cur if cur is not None else default
+
+def flatten_cv_item(item: dict) -> dict:
+    campaign = item.get("campaign") or {}
+    job = (campaign.get("job") or {}) if isinstance(campaign, dict) else {}
+    apply = item.get("apply") or {}
+
+    return {
+        "cv_id": item.get("id"),
+        "candidate_id ": item.get("user_id"),
+        "full_name": item.get("fullname") or item.get("full_name"),
+        "gender": item.get("gender"),
+        "phone": item.get("phone"),
+        "email": item.get("email"),
+        "campaign_id": campaign.get("id"),
+        "campaign_title": campaign.get("title"),
+        "job_id": job.get("id"),
+        "applied_position": job.get("title") or campaign.get("position_title"),
+        "application_date": apply.get("created_at") or item.get("created_at_str"),
+        "status_str": item.get("status_str"),
+        "created_at_str": item.get("created_at_str"),
+        "cv_last_update_time_str": item.get("last_update_time_str"),
+        "cv_last_update_time": item.get("last_update_time"),
+        "apply_id": apply.get("id"),
+        "apply_status": apply.get("status"),
+        "is_viewed": item.get("is_viewed"),
+        "source": item.get("source"),
+        "source_str": item.get("source_str"),
+        "CV_Source":  "TopCV",
+    }
+
+# ================== SELENIUM HELPERS ==================
+def is_cookie_expired(cookie_line: str) -> bool:
+    cookies = cookie_str_to_dict(cookie_line)
+    exp_ms = cookies.get("cookie__token_expiration.refresh")
+    if not exp_ms:
+        return True  
+    
+    try:
+        exp_timestamp = int(exp_ms)
+        current_timestamp = int(time.time() * 1000)  
+        return current_timestamp > exp_timestamp
+    except ValueError:
+        return True 
+
+def build_cookie_header_from_driver(driver) -> str:
+    cookies = driver.get_cookies()
+    return "; ".join([f"{c['name']}={c.get('value', '')}" for c in cookies])
+
+def wait_for_auth_cookie(driver, timeout=300) -> bool:
+    """
+    Chờ đến khi xuất hiện cookie__token.refresh (tối đa timeout giây).
+    Trong lúc này bạn cứ login, nhập OTP, v.v. bình thường.
+    """
+    end = time.time() + timeout
+    print(f"[SELENIUM] Đang chờ bạn login (tối đa {timeout} giây)...")
+    last_log = 0
+    while time.time() < end:
+        cookies = driver.get_cookies()
+        if any(c.get("name") == "cookie__token.refresh" for c in cookies):
+            print("[SELENIUM] Đã thấy cookie__token.refresh → login OK.")
+            return True
+        if time.time() - last_log > 10:
+            print("[SELENIUM] Chưa thấy cookie__token.refresh, vẫn tiếp tục chờ...")
+            last_log = time.time()
+        time.sleep(2)
+    print("[SELENIUM] Hết thời gian chờ nhưng chưa thấy cookie__token.refresh.")
+    return False
+
+def dismiss_popups(driver):
+    """
+    Auto đóng mấy popup / modal sau login:
+    - Modal quảng cáo lớn (button.close)
+    - Popover thông báo có nút 'Không, cảm ơn' (#topcv-popover-allow-button)
+    """
+    # đóng modal quảng cáo lớn (nút X)
+    try:
+        close_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.close"))
+        )
+        close_btn.click()
+        time.sleep(0.5)
+        print("[SELENIUM] Đã click nút X (modal quảng cáo).")
+    except Exception:
+        pass
+
+    # đóng popover thông báo "Không, cảm ơn"
+    try:
+        deny_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "#topcv-popover-allow-button"))
+        )
+        deny_btn.click()
+        time.sleep(0.5)
+        print("[SELENIUM] Đã click nút 'Không, cảm ơn' (popover thông báo).")
+    except Exception:
+        pass
+
+def open_browser_and_get_cookie_line() -> str | None:
+    """
+    Mở Chrome với profile riêng, cho bạn login,
+    auto đợi có cookie__token.refresh, auto đóng popup,
+    nhảy sang trang quản lý CV, rồi lấy cookie và lưu cookies.txt.
+    """
+    profile_path = Path(CHROME_USER_DATA_DIR)
+    profile_path.mkdir(parents=True, exist_ok=True)
+
+    opts = uc.ChromeOptions()
+    opts.add_argument("--headless")
+    opts.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+    opts.add_argument("--profile-directory=Default")
+    opts.add_argument("--start-maximized")
+    prefs = {"profile.default_content_setting_values.notifications": 2}
+    opts.add_experimental_option("prefs", prefs)
+    
+    driver = uc.Chrome(options=opts)
+    try:
+        print(f"[SELENIUM] Mở trình duyệt tới: {LOGIN_URL}")
+        driver.get(LOGIN_URL)
+
+        # Tự động đăng nhập nếu có thông tin trong .env
+        email = os.getenv("TOPCV_USERNAME")
+        password = os.getenv("TOPCV_PASSWORD")
+
+        if email and password:
+            print("[SELENIUM] Phát hiện credentials, đang thử tự động đăng nhập")
+            try:
+                email_input = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder="Email"]'))
+                )
+                password_input = driver.find_element(By.CSS_SELECTOR, 'input[placeholder="Mật khẩu"]')
+                login_btn = driver.find_element(By.CSS_SELECTOR, 'button[class*="btn-primary"]')
+
+                email_input.clear()
+                email_input.send_keys(email)
+                password_input.clear()
+                password_input.send_keys(password)
+                
+                login_btn.click()
+                print("[SELENIUM] Đã submit form đăng nhập.")
+            except Exception as e:
+                # Trong trường hợp ta đã tồn tại session trước đó đăng nhập rồi hoặc khi selector sai
+                print(f"[SELENIUM] Lỗi khi tự động đăng nhập (có thể đã login rồi hoặc selector sai)")
+        else:
+            print("[SELENIUM] Không tìm thấy TOPCV_EMAIL/TOPCV_PASSWORD trong .env. Vui lòng đăng nhập thủ công.")
+
+        # Đợi login hoàn tất dựa trên cookie auth
+        if not wait_for_auth_cookie(driver, timeout=300):
+            print("[SELENIUM] Không lấy được cookie auth trong thời gian cho phép.")
+            return None
+        try:
+            # Đóng popup ở dashboard
+            dismiss_popups(driver)
+        except Exception:
+            pass
+
+        # NHẢY TỚI TRANG QUẢN LÝ CV
+        print(f"[SELENIUM] Điều hướng tới trang CV: {CV_PAGE_URL}")
+        driver.get(CV_PAGE_URL)
+
+        # Đợi trang CV load sơ bộ
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "div.app, div#app, body")
+                )
+            )
+        except Exception:
+            pass
+
+        time.sleep(2)
+
+        cookie_line = build_cookie_header_from_driver(driver)
+        if not cookie_line:
+            print("[SELENIUM] Không thu được cookie nào!")
+            return None
+
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(cookie_line + "\n")
+
+        print(f"[SELENIUM] Đã lưu cookie vào {COOKIES_FILE}")
+        return cookie_line
+
+    finally:
+        driver.quit()
+
+def load_cookie_lines(file_path: str = COOKIES_FILE) -> list[str]:
+    path = Path(file_path)
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        if lines:
+            print(f"[INFO] Đã đọc {len(lines)} dòng cookie từ {file_path}")
+            return lines
+        else:
+            print(f"[WARN] {file_path} trống.")
+    else:
+        print(f"[WARN] Không tìm thấy {file_path}.")
+
+    print("[ACTION] Mở Selenium để lấy cookie mới.")
+    new_cookie_line = open_browser_and_get_cookie_line()
+    if new_cookie_line:
+        return [new_cookie_line]
+    return []
+
+# ================== REQUESTS + API ==================
+
+def fetch_page(session: requests.Session, headers: dict, page: int) -> dict:
+    params = {
+        "page": page,
+        "get_newest_cv": "true",
+        "source": SOURCE,
+        "filter_cv_pro": "false",
+        "filter_by": FILTER_BY,
+    }
+    r = session.get(LIST_ENDPOINT, headers=headers, params=params, timeout=30)
+    return r.json()
+
+def scrape_all(max_pages: int, sleep_range=(0.6, 1.2)) -> pd.DataFrame:
+    cookie_lines = load_cookie_lines(COOKIES_FILE)
+    if not cookie_lines:
+        raise RuntimeError("Không có cookie nào để dùng (kể cả sau khi mở Selenium).")
+
+    all_rows = []
+    session = requests.Session()
+    cookie_index = 0
+    total_cookies = len(cookie_lines)
+
+    page = 1
+    while page <= max_pages:
+        cookie_line = cookie_lines[cookie_index % total_cookies]
+        cookie_index += 1
+
+        cookies = cookie_str_to_dict(cookie_line)
+        session.cookies.clear()
+        session.cookies.update(cookies)
+
+        bearer = extract_bearer_from_cookie(cookies)
+        if not bearer:
+            print(f"[SKIP] Cookie #{cookie_index} thiếu bearer token (cookie__token.refresh).")
+            if total_cookies == 1:
+                print("[ACTION] Thử lấy cookie mới bằng Selenium vì bearer thiếu.")
+                new_cookie_line = open_browser_and_get_cookie_line()
+                if not new_cookie_line:
+                    print("[FATAL] Không lấy được cookie mới. Dừng.")
+                    break
+                cookie_lines = [new_cookie_line]
+                total_cookies = 1
+                cookie_index = 0
+                continue
+            else:
+                continue
+        
+        if is_cookie_expired(cookie_line):
+            print(f"[SKIP] Cookie #{cookie_index} hết hạn.")
+            if total_cookies == 1:
+                print("[ACTION] Thử lấy cookie mới bằng Selenium")
+                new_cookie_line = open_browser_and_get_cookie_line()
+                if not new_cookie_line:
+                    print("[FATAL] Không lấy được cookie mới. Dừng.")
+                    break
+                cookie_lines = [new_cookie_line]
+                total_cookies = 1
+                cookie_index = 0
+                continue
+            else:
+                continue
+            
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Origin": "https://tuyendung.topcv.vn",
+            "Referer": "https://tuyendung.topcv.vn/",
+            "Authorization": bearer,
+            "sec-ch-ua": '"Not A(Brand";v="8", "Chromium";v="132"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+        }
+
+        try:
+            j = fetch_page(session, headers, page)
+        except RuntimeError as e:
+            msg = str(e)
+            print(f"{msg}")
+            break
+
+        data = safe_get(j, "cvs", "data", default=[])
+        if not data:
+            print(f"[STOP] page={page} không còn data (data rỗng).")
+            break
+
+        for item in data:
+            all_rows.append(flatten_cv_item(item))
+
+        cur = safe_get(j, "cvs", "current_page", default=page)
+        last = safe_get(j, "cvs", "last_page", default=None)
+        print(f"[OK] page={cur} rows={len(data)} total={len(all_rows)} last_page={last}")
+
+        if last and page >= int(last):
+            print("[DONE] Đã tới last_page từ API.")
+            break
+
+        page += 1
+        time.sleep(random.uniform(*sleep_range))
+
+    return pd.DataFrame(all_rows)
+
+# ================== MAIN ==================
+
+if __name__ == "__main__":
+    max_pages = 100
+    df = scrape_all(max_pages=max_pages)
+    if not df.empty:
+        df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+        print(f"\n[SAVED] {OUTPUT_CSV} với {len(df)} dòng.")
+        print(df.head(10))
+    else:
+        print("\n[WARN] Không có CV nào được lấy.")
