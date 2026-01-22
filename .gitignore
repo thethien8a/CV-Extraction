@@ -3,5 +3,7 @@
 chrome_profile_topcv
 __pycache__
 *.csv
-*.txt
 .cursor
+cookies.txt
+lake_cv/
+.serena/
