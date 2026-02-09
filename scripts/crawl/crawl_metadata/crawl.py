@@ -1,9 +1,7 @@
 import random
 import time
-
 import requests
 from dotenv import load_dotenv
-
 from scripts.configs.config import COOKIES_FILE
 from scripts.crawl.crawl_metadata.api import fetch_page
 from scripts.crawl.crawl_metadata.browser import (
@@ -39,8 +37,12 @@ def scrape_all(max_pages: int, conn, sleep_range=(0.6, 1.2)) -> int:
 
     session = requests.Session()
     cookies = cookie_str_to_dict(cookie_line)
+    
     session.cookies.clear()
+    
     session.cookies.update(cookies)
+    print(f"[INFO] Đã cập nhật cookies vào session.")
+    
     bearer = extract_bearer_from_cookie(cookies)
 
     page = 1

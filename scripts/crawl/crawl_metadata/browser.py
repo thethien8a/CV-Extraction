@@ -123,7 +123,7 @@ def open_browser_and_get_cookie_line() -> str | None:
     profile_path.mkdir(parents=True, exist_ok=True)
 
     opts = uc.ChromeOptions()
-    opts.add_argument("--headless")
+    # opts.add_argument("--headless")
     opts.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
     opts.add_argument("--profile-directory=Default")
     opts.add_argument("--start-maximized")
