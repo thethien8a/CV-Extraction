@@ -46,3 +46,80 @@ MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "topcv-cv-pdf")
+
+# CV extraction
+MAX_CONCURRENCY = 5
+BATCH_SIZE = 50
+
+# Gemini
+MODEL_NAME = "gemini-2.0-flash-lite"
+
+CV_INFO_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "goal_description": {"type": "string"},
+        "date_of_birth": {"type": "string"},
+        "contact_platforms": {
+            "type": "object",
+            "properties": {
+                "facebook": {"type": "string"},
+                "linkedin": {"type": "string"},
+            },
+        },
+        "address": {"type": "string"},
+        "education": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "institution": {"type": "string"},
+                    "study_time": {
+                        "type": "object",
+                        "properties": {
+                            "start": {"type": "string"},
+                            "end": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+        "activities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "organization": {"type": "string"},
+                    "time": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+            },
+        },
+        "skills": {"type": "array", "items": {"type": "string"}},
+        "certifications": {"type": "array", "items": {"type": "string"}},
+        "prizes": {"type": "array", "items": {"type": "string"}},
+        "languages": {"type": "array", "items": {"type": "string"}},
+        "projects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "time": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+            },
+        },
+        "references": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "role": {"type": "string"},
+                },
+            },
+        },
+    },
+}
