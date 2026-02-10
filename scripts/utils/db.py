@@ -59,6 +59,18 @@ def init_db(conn):
             ADD COLUMN IF NOT EXISTS last_fetched_at TIMESTAMPTZ DEFAULT NOW();
             """
         )
+        cur.execute(
+            """
+            ALTER TABLE cv_metadata 
+            ADD COLUMN IF NOT EXISTS has_extracted BOOLEAN DEFAULT FALSE;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE cv_metadata 
+            ADD COLUMN IF NOT EXISTS extracted_at TIMESTAMPTZ DEFAULT NULL;
+            """
+        )
     conn.commit()
 
 
