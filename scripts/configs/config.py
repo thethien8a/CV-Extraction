@@ -48,8 +48,9 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "topcv-cv-pdf")
 
 # CV extraction
-MAX_CONCURRENCY = 5
-BATCH_SIZE = 50
+MAX_CONCURRENCY = 1
+BATCH_SIZE = 5
+MAX_RETRIES = 3
 
 # Gemini
 MODEL_NAME = "gemini-2.0-flash-lite"

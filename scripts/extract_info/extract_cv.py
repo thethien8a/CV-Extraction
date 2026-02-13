@@ -5,7 +5,8 @@ from typing import Any
 import random   
 from google import genai
 from google.genai import types
-from scripts.configs.config import MODEL_NAME, CV_INFO_JSON_SCHEMA
+from google.genai import errors as genai_errors
+from scripts.configs.config import MODEL_NAME, CV_INFO_JSON_SCHEMA, MAX_RETRIES
 import asyncio
 
 def extract_cv(minio_client, bucket_name, cv_id, candidate_id):
@@ -63,26 +64,26 @@ def _remove_empty_values(data: Any) -> Any:
     return data
 
 async def _process_one_cv(semaphore: asyncio.Semaphore, minio_client, bucket_name, cv_id, candidate_id):
-    print(f"[INFO] Extracting CV {cv_id} for candidate {candidate_id}")
-    
-    pdf_bytes = extract_cv(minio_client, bucket_name, cv_id, candidate_id)
-    print(f"[INFO] Got PDF bytes for CV {cv_id} for candidate {candidate_id}")
-    
-    async with semaphore:
-        cv_info = await extract_cv_info(pdf_bytes)
-    
-    print(f"[INFO] Extracted CV info for cv_id={cv_id} and candidate_id={candidate_id}")
-    return cv_id, candidate_id, cv_info
+    try:
+        print(f"[INFO] Extracting CV {cv_id} for candidate {candidate_id}")
+
+        pdf_bytes = await asyncio.to_thread(
+            extract_cv, minio_client, bucket_name, cv_id, candidate_id
+        )
+        print(f"[INFO] Got PDF bytes for CV {cv_id} for candidate {candidate_id}")
+
+        async with semaphore:
+            cv_info = await extract_cv_info(pdf_bytes)
+
+        print(f"[INFO] Extracted CV info for cv_id={cv_id} and candidate_id={candidate_id}")
+        return cv_id, candidate_id, cv_info
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed cv_id={cv_id} candidate_id={candidate_id}: {exc}"
+        ) from exc
+
 
 async def extract_cv_info(pdf_bytes: bytes, model_name: str = MODEL_NAME) -> dict[str, Any]:
-    api_key = _get_genai_api_key()
-    if not api_key:
-        raise ValueError(
-            "Không tìm thấy API key. Hãy set GOOGLE_API_KEY hoặc GEMINI_API_KEY (hoặc LIST_API_KEY)."
-        )
-
-    client = genai.Client(api_key=api_key)
-
     prompt = """
         Bạn là AI chuyên trích xuất CV. Hãy đọc file PDF CV (có thể tiếng Việt hoặc tiếng Anh)
         và trả về DUY NHẤT JSON object theo cấu trúc sau (nếu thiếu dữ liệu thì bỏ qua key đó):
@@ -105,24 +106,47 @@ async def extract_cv_info(pdf_bytes: bytes, model_name: str = MODEL_NAME) -> dic
         3) Không bịa thông tin.
     """
 
-    response = await client.aio.models.generate_content(
-        model=model_name,
-        contents=[
-            types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-            prompt,
-        ],
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            response_mime_type="application/json",
-            response_json_schema=CV_INFO_JSON_SCHEMA,
-        ),
-    )
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        api_key = _get_genai_api_key()
+        if not api_key:
+            raise ValueError(
+                "Không tìm thấy API key. Hãy set LIST_API_KEY."
+            )
 
-    if isinstance(response.parsed, dict):
-        parsed_data = response.parsed
-    else:
-        parsed_data = _parse_json_text(response.text or "")
+        client = genai.Client(api_key=api_key)
 
-    cleaned_data = _remove_empty_values(parsed_data)
-    
-    return cleaned_data if isinstance(cleaned_data, dict) else {}
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=[
+                    types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                    prompt,
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    response_mime_type="application/json",
+                    response_json_schema=CV_INFO_JSON_SCHEMA,
+                ),
+            )
+
+            if isinstance(response.parsed, dict):
+                parsed_data = response.parsed
+            else:
+                parsed_data = _parse_json_text(response.text or "")
+
+            cleaned_data = _remove_empty_values(parsed_data)
+            return cleaned_data if isinstance(cleaned_data, dict) else {}
+
+        except genai_errors.APIError as e:
+            last_error = e
+            if e.code == 429:
+                print(
+                    f"[WARN] 429 Rate limited (attempt {attempt}/{MAX_RETRIES}), "
+                    f"đợi 3s rồi thử lại với key khác..."
+                )
+                await asyncio.sleep(3)
+                continue
+            raise
+
+    raise last_error
