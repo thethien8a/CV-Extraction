@@ -7,3 +7,4 @@ __pycache__
 cookies.txt
 lake_cv/
 .serena/
+minio_data/

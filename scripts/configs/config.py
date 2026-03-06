@@ -11,13 +11,15 @@ SOURCE = "1"           # 1 = TopCV, nếu sau này muốn tất cả nguồn th�
 FILTER_BY = "all"      # hoặc "not-viewed" 
 
 # API endpoints
+CAMPAIGN_ID = 2350596
+
 API_BASE = "https://tuyendung-api.topcv.vn"
 LIST_ENDPOINT = f"{API_BASE}/api/v1/cv-management/cvs"
 LOGIN_URL = "https://tuyendung.topcv.vn/app/login"
 CV_PAGE_URL = (
     "https://tuyendung.topcv.vn/app/cvs-management"
     "?get_newest_cv=true"
-    "&recruitment_campaign_id"
+    f"&recruitment_campaign_id={CAMPAIGN_ID}"
     f"&source={SOURCE}"
     "&status"
     "&label"
