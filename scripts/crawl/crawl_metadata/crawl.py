@@ -15,7 +15,9 @@ from scripts.crawl.crawl_metadata.utils import (
     flatten_cv_item,
     safe_get,
 )
-from scripts.utils.db import get_conn, init_db, upsert_cv_rows
+from scripts.utils.db import get_conn, init_db, insert_cv_rows
+from scripts.crawl.crawl_metadata.get_crawled_ids import get_crawled_ids
+from scripts.configs.config import HEADERS
 
 load_dotenv()
 
@@ -42,49 +44,52 @@ def scrape_all(max_pages: int, conn, sleep_range=(0.6, 1.2)) -> int:
     
     session.cookies.update(cookies)
     print(f"[INFO] Đã cập nhật cookies vào session.")
-    
-    bearer = extract_bearer_from_cookie(cookies)
 
+    bearer = extract_bearer_from_cookie(cookies)
+    if bearer:
+        HEADERS["Authorization"] = bearer
+        print(f"[INFO] Đã set Authorization header từ cookie.")
+    else:
+        print("[WARN] Không tìm thấy Bearer token trong cookie.")
+    
     page = 1
-    total_upserted = 0
-    while page <= max_pages:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Origin": "https://tuyendung.topcv.vn",
-            "Referer": "https://tuyendung.topcv.vn/",
-            "Authorization": bearer,
-            "sec-ch-ua": '"Not A(Brand";v="8", "Chromium";v="132"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-site",
-        }
+    needed_stop = 0
+    total_inserted = 0
+
+    while page <= max_pages and not needed_stop:
 
         try:
-            j = fetch_page(session, headers, page)
+            j = fetch_page(session, HEADERS, page)
         except RuntimeError as e:
             msg = str(e)
             print(f"{msg}")
             break
 
         data = safe_get(j, "cvs", "data", default=[])
+
         if not data:
             print(f"[STOP] page={page} không còn data (data rỗng).")
             break
-
+        
         rows = [flatten_cv_item(item) for item in data]
-        upserted = upsert_cv_rows(conn, rows)
-        total_upserted += upserted
+        if not rows:
+            print("[SKIP] Không có CV nào mới để insert.")
+            break
+        
+        inserted = insert_cv_rows(conn, rows)
+        total_inserted += inserted
+
+        if inserted == 0:
+            print("[STOP] Không có CV mới nào được insert, dừng crawl.")
+            break
 
         cur = safe_get(j, "cvs", "current_page", default=page)
         last = safe_get(j, "cvs", "last_page", default=None)
-        print(
-            f"[OK] page={cur} rows={len(data)} upserted={upserted} total_upserted={total_upserted} last_page={last}"
-        )
 
+        print(
+            f"[OK] page={cur} rows={len(data)} inserted={inserted} total_inserted={total_inserted} last_page={last}"
+        )
+        
         if last is not None:
             try:
                 if page >= int(str(last)):
@@ -96,7 +101,7 @@ def scrape_all(max_pages: int, conn, sleep_range=(0.6, 1.2)) -> int:
         page += 1
         time.sleep(random.uniform(*sleep_range))
 
-    return total_upserted
+    return total_inserted
 
 
 if __name__ == "__main__":
@@ -108,6 +113,6 @@ if __name__ == "__main__":
     conn.close()
 
     if total > 0:
-        print(f"\n[SAVED] Đã upsert {total} CV vào PostgreSQL.")
+        print(f"\n[SAVED] Đã insert {total} CV vào PostgreSQL.")
     else:
         print("\n[INFO] Không có CV mới nào được ghi.")

@@ -2,13 +2,14 @@ import os
 import time
 from pathlib import Path
 
+import requests
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 from scripts.configs.config import (
-    CHROME_USER_DATA_DIR, LOGIN_URL, CV_PAGE_URL, COOKIES_FILE
+    CHROME_USER_DATA_DIR, LOGIN_URL, CV_PAGE_URL, COOKIES_FILE, HEADERS, LIST_ENDPOINT
 )
 from scripts.utils.get_chrome_version import get_chrome_major_version
 from .utils import cookie_str_to_dict
@@ -123,7 +124,7 @@ def open_browser_and_get_cookie_line() -> str | None:
     profile_path.mkdir(parents=True, exist_ok=True)
 
     opts = uc.ChromeOptions()
-    # opts.add_argument("--headless")
+    opts.add_argument("--headless")
     opts.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
     opts.add_argument("--profile-directory=Default")
     opts.add_argument("--start-maximized")

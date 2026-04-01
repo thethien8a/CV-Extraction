@@ -141,6 +141,56 @@ def upsert_cv_rows(conn, rows):
     conn.commit()
     return len(values)
 
+def insert_cv_rows(conn, rows):
+    if not rows:
+        return 0
+
+    columns = [
+        "cv_id",
+        "candidate_id",
+        "full_name",
+        "phone",
+        "email",
+        "campaign_id",
+        "campaign_title",
+        "job_id",
+        "applied_position",
+        "application_date",
+        "status_str",
+        "created_at_str",
+        "cv_last_update_time_str",
+        "cv_last_update_time",
+        "apply_id",
+        "apply_status",
+        "is_viewed",
+        "cv_url",
+        "source",
+        "source_str"
+    ]
+
+    values = [
+        [row.get(col) for col in columns]
+        for row in rows
+        if row.get("cv_id") is not None
+    ]
+
+    if not values:
+        return 0
+
+    col_list = ", ".join(columns)
+    insert_sql = f"""
+        INSERT INTO cv_metadata ({col_list})
+        VALUES %s
+        ON CONFLICT (cv_id) DO NOTHING
+    """
+
+    with conn.cursor() as cur:
+        execute_values(cur, insert_sql, values)
+        inserted = cur.rowcount
+    
+    conn.commit()
+    return inserted
+
 def mark_download_status(conn, cv_id, status):
     with conn.cursor() as cur:
         cur.execute(

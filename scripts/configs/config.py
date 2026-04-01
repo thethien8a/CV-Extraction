@@ -1,17 +1,36 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from scripts.crawl.crawl_metadata.utils import extract_bearer_from_cookie
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+
+BEARER = extract_bearer_from_cookie({})
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Origin": "https://tuyendung.topcv.vn",
+    "Referer": "https://tuyendung.topcv.vn/",
+    "Authorization": BEARER,
+    "sec-ch-ua": '"Not A(Brand";v="8", "Chromium";v="132"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
+}
 
 # Cấu hình lọc CV
 SOURCE = "1"           # 1 = TopCV, nếu sau này muốn tất cả nguồn thì để "" hoặc None
 FILTER_BY = "all"      # hoặc "not-viewed" 
 
 # API endpoints
-CAMPAIGN_ID = 2350596
+CAMPAIGN_ID = 2450311
 
 API_BASE = "https://tuyendung-api.topcv.vn"
 LIST_ENDPOINT = f"{API_BASE}/api/v1/cv-management/cvs"

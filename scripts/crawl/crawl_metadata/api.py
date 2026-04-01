@@ -11,4 +11,10 @@ def fetch_page(session: requests.Session, headers: dict, page: int) -> dict:
         "recruitment_campaign_id": CAMPAIGN_ID,
     }
     r = session.get(LIST_ENDPOINT, headers=headers, params=params, timeout=30)
+    
+    # Thêm vào api.py để xem lỗi
+    if r.status_code != 200:
+        print(f"Response body: {r.text}") 
+        raise RuntimeError(f"API error: {r.status_code}")
+    
     return r.json()
